@@ -1,5 +1,9 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <unistd.h>  //Header file for sleep(). man 3 sleep for details. 
+#include <pthread.h> 
+#include <time.h>
+#include <errno.h>  
 
 #ifdef TARGET_WEB
 #include <emscripten.h>
@@ -56,10 +60,14 @@ static struct AudioAPI *audio_api;
 static struct GfxWindowManagerAPI *wm_api;
 static struct GfxRenderingAPI *rendering_api;
 
+pthread_t audio_thread_id;
+bool audio_thread_running = false;
+
 extern void gfx_run(Gfx *commands);
 extern void thread5_game_loop(void *arg);
 extern void create_next_audio_buffer(s16 *samples, u32 num_samples);
 void game_loop_one_iteration(void);
+void* audio_thread();
 
 void dispatch_audio_sptask(struct SPTask *spTask) {
 }
@@ -86,30 +94,51 @@ void send_display_list(struct SPTask *spTask) {
 void produce_one_frame(void) {
     gfx_start_frame();
 
-    const f32 master_mod = (f32)configMasterVolume / 127.0f;
-    set_sequence_player_volume(SEQ_PLAYER_LEVEL, (f32)configMusicVolume / 127.0f * master_mod);
-    set_sequence_player_volume(SEQ_PLAYER_SFX, (f32)configSfxVolume / 127.0f * master_mod);
-    set_sequence_player_volume(SEQ_PLAYER_ENV, (f32)configEnvVolume / 127.0f * master_mod);
-
     game_loop_one_iteration();
     thread6_rumble_loop(NULL);
 
-    int samples_left = audio_api->buffered();
-    u32 num_audio_samples = samples_left < audio_api->get_desired_buffered() ? SAMPLES_HIGH : SAMPLES_LOW;
-    //printf("Audio samples: %d %u\n", samples_left, num_audio_samples);
-    s16 audio_buffer[SAMPLES_HIGH * 2 * 2];
-    for (int i = 0; i < 2; i++) {
-        /*if (audio_cnt-- == 0) {
-            audio_cnt = 2;
-        }
-        u32 num_audio_samples = audio_cnt < 2 ? 528 : 544;*/
-        create_next_audio_buffer(audio_buffer + i * (num_audio_samples * 2), num_audio_samples);
-    }
-    //printf("Audio samples before submitting: %d\n", audio_api->buffered());
-
-    audio_api->play((u8 *)audio_buffer, 2 * num_audio_samples * 4);
-
     gfx_end_frame();
+}
+
+// Seperate the audio thread from the main thread so that your ears won't bleed at a low framerate
+// FIXME: Chance of a segfault when teleporting to a new level
+void* audio_thread() {
+    const long framerateNano = 33333333L;   // 33.333333 ms = 30 fps; run this thread 30 times a second like the original game
+    int napResult = 0;
+    struct timespec start_time;
+    struct timespec end_time;
+    while(audio_thread_running) {
+        clock_gettime(CLOCK_MONOTONIC, &start_time);
+        const f32 master_mod = (f32)configMasterVolume / 127.0f;
+        set_sequence_player_volume(SEQ_PLAYER_LEVEL, (f32)configMusicVolume / 127.0f * master_mod);
+        set_sequence_player_volume(SEQ_PLAYER_SFX, (f32)configSfxVolume / 127.0f * master_mod);
+        set_sequence_player_volume(SEQ_PLAYER_ENV, (f32)configEnvVolume / 127.0f * master_mod);
+
+        int samples_left = audio_api->buffered();
+        u32 num_audio_samples = samples_left < audio_api->get_desired_buffered() ? SAMPLES_HIGH : SAMPLES_LOW;
+        // printf("Audio samples: %d %u\n", samples_left, num_audio_samples);
+        s16 audio_buffer[SAMPLES_HIGH * 2 * 2];
+        for (int i = 0; i < 2; i++) {
+            /*if (audio_cnt-- == 0) {
+                audio_cnt = 2;
+            }
+            u32 num_audio_samples = audio_cnt < 2 ? 528 : 544;*/
+            if (!audio_thread_running) break;
+            create_next_audio_buffer(audio_buffer + i * (num_audio_samples * 2), num_audio_samples);
+        }
+        // printf("Audio samples before submitting: %d\n", audio_api->buffered());
+        if (!audio_thread_running) break;
+        audio_api->play((u8 *)audio_buffer, 2 * num_audio_samples * 4);
+
+        clock_gettime(CLOCK_MONOTONIC, &end_time);
+
+        long napTime = framerateNano - (end_time.tv_nsec - start_time.tv_nsec);
+        napResult = nanosleep((const struct timespec[]){{0, napTime}}, NULL);
+        if (napResult == -1) {
+            printf("interrupted by a signal handler\n"); 
+        }
+    }
+    return NULL;
 }
 
 void audio_shutdown(void) {
@@ -117,6 +146,8 @@ void audio_shutdown(void) {
         if (audio_api->shutdown) audio_api->shutdown();
         audio_api = NULL;
     }
+    audio_thread_running = false;
+    pthread_join(audio_thread_id, NULL);
 }
 
 void game_deinit(void) {
@@ -257,6 +288,8 @@ void main_func(void) {
     emscripten_set_main_loop(em_main_loop, 0, 0);
     request_anim_frame(on_anim_frame);
 #else
+    audio_thread_running = true;
+    pthread_create(&audio_thread_id, NULL, audio_thread, NULL); 
     while (true) {
         wm_api->main_loop(produce_one_frame);
 #ifdef DISCORDRPC
