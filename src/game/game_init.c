@@ -591,7 +591,7 @@ void game_loop_one_iteration(void) {
         osContStartReadData(&gSIEventMesgQueue);
     }
 
-    audio_game_loop_tick();
+    // audio_game_loop_tick();
     config_gfx_pool();
     read_controller_inputs();
     levelCommandAddr = level_script_execute(levelCommandAddr);

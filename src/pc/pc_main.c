@@ -65,6 +65,7 @@ bool audio_thread_running = false;
 
 extern void gfx_run(Gfx *commands);
 extern void thread5_game_loop(void *arg);
+extern void audio_game_loop_tick(void);
 extern void create_next_audio_buffer(s16 *samples, u32 num_samples);
 void game_loop_one_iteration(void);
 void* audio_thread();
@@ -101,7 +102,7 @@ void produce_one_frame(void) {
 }
 
 // Seperate the audio thread from the main thread so that your ears won't bleed at a low framerate
-// FIXME: Chance of a segfault when teleporting to a new level
+// FIXME: Low but comman chance of a segfault when teleporting to a new level
 void* audio_thread() {
     const long framerateNano = 33333333L;   // 33.333333 ms = 30 fps; run this thread 30 times a second like the original game
     int napResult = 0;
@@ -113,6 +114,8 @@ void* audio_thread() {
         set_sequence_player_volume(SEQ_PLAYER_LEVEL, (f32)configMusicVolume / 127.0f * master_mod);
         set_sequence_player_volume(SEQ_PLAYER_SFX, (f32)configSfxVolume / 127.0f * master_mod);
         set_sequence_player_volume(SEQ_PLAYER_ENV, (f32)configEnvVolume / 127.0f * master_mod);
+
+        audio_game_loop_tick();
 
         int samples_left = audio_api->buffered();
         u32 num_audio_samples = samples_left < audio_api->get_desired_buffered() ? SAMPLES_HIGH : SAMPLES_LOW;
