@@ -73,6 +73,37 @@ void sys_sleep(const uint64_t us) {
     usleep(us);
 }
 
+// A high-resolution profiling timer. Returns the current time in microseconds.
+double sys_profile_time(void) {
+    // TODO: Platform specific stuff
+    struct timespec tv;
+    clock_gettime(CLOCK_MONOTONIC, &tv);
+    return (double)(tv.tv_nsec) / 1000.0 + (double)(tv.tv_sec) * 1000000.0;
+}
+
+void sys_mutex_lock(pthread_mutex_t *mutex) {
+    pthread_mutex_lock(mutex);
+}
+
+void sys_mutex_unlock(pthread_mutex_t *mutex) {
+    pthread_mutex_unlock(mutex);
+}
+void sys_semaphore_init(sem_t *sem, int pshared, unsigned int value) {
+    sem_init(sem, pshared, value);
+}
+
+void sys_semaphore_wait(sem_t *sem) {
+    sem_wait(sem);
+}
+
+void sys_semaphore_post(sem_t *sem) {
+    sem_post(sem);
+}
+
+void sys_semaphore_destroy(sem_t *sem) {
+    sem_destroy(sem);
+}
+
 /* this calls a platform-specific impl function after forming the error message */
 
 static void sys_fatal_impl(const char *msg) __attribute__ ((noreturn));

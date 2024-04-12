@@ -100,24 +100,24 @@ void send_display_list(struct SPTask *spTask) {
 #endif
 
 void lock_game_loop(bool unlock) {
-    pthread_mutex_lock(&game_mutex);
+    sys_mutex_lock(&game_mutex);
     game_loop_iterating = unlock;
-    pthread_mutex_unlock(&game_mutex);
+    sys_mutex_unlock(&game_mutex);
 }
 
 bool game_loop_locked() {
-    pthread_mutex_lock(&game_mutex);
+    sys_mutex_lock(&game_mutex);
     bool locked = game_loop_iterating;
-    pthread_mutex_unlock(&game_mutex);
+    sys_mutex_unlock(&game_mutex);
     return locked;
 }
 
 void produce_one_frame(void) {
     gfx_start_frame();
 
-    sem_wait(&audio_sem);
+    sys_semaphore_wait(&audio_sem);
     game_loop_one_iteration();
-    sem_post(&game_sem);
+    sys_semaphore_post(&game_sem);
     
     thread6_rumble_loop(NULL);
 
@@ -125,23 +125,25 @@ void produce_one_frame(void) {
 }
 
 // Seperate the audio thread from the main thread so that your ears won't bleed at a low framerate
-// BUG: Race condition when the game logic runs faster than its intended speed.
+// BUG: Race condition between loading zones when the game logic runs faster than its intended speed.
+//  What I think happens is that the game thread finishes loading new music before the audio thread finishes rendering the audio.
 //  This won't happen in normal gameplay at all unless you were to uncap the framerate, which you can only do by modifying the source code.
 void* audio_thread() {
-    const double frametime_micro = 16666.666;   // 16.666666 ms = 60Hz; run this thread 60 times a second like the original game
-    struct timespec start_time;
-    struct timespec end_time;
-    sem_wait(&game_sem);
+    // Keep track of the time in microseconds
+    const f64 frametime_micro = 16666.666;   // 16.666666 ms = 60Hz; run this thread 60 times a second like the original game
+    f64 start_time;
+    f64 end_time;
+    sys_semaphore_wait(&game_sem);
     while(1) {
         // Check if the audio thread should be stopped
-        pthread_mutex_lock(&audio_mutex);
+        sys_mutex_lock(&audio_mutex);
         if (!audio_thread_running) {
-            pthread_mutex_unlock(&audio_mutex);
+            sys_mutex_unlock(&audio_mutex);
             break;
         }
-        pthread_mutex_unlock(&audio_mutex);
+        sys_mutex_unlock(&audio_mutex);
 
-        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &start_time);
+        start_time = sys_profile_time();
         const f32 master_mod = (f32)configMasterVolume / 127.0f;
         set_sequence_player_volume(SEQ_PLAYER_LEVEL, (f32)configMusicVolume / 127.0f * master_mod);
         set_sequence_player_volume(SEQ_PLAYER_SFX, (f32)configSfxVolume / 127.0f * master_mod);
@@ -160,32 +162,31 @@ void* audio_thread() {
         // printf("Audio samples before submitting: %d\n", audio_api->buffered());
         audio_api->play((u8 *)audio_buffer, num_audio_samples * 4);
 
-        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &end_time);
+        end_time = sys_profile_time();
 
         // Sleep for the remaining time
-        uint64_t second_passed = end_time.tv_nsec < start_time.tv_nsec ? 1000000000L : 0;       // Take account for if the end time is in the next second
-        double nap_time = frametime_micro - (double)(end_time.tv_nsec + second_passed - start_time.tv_nsec) / 1000.0;
+        f64 nap_time = frametime_micro - (end_time - start_time);
         // printf("Audio thread nap time: %f\n", nap_time);
-        sys_sleep(nap_time);
-        sem_post(&audio_sem);
+        if (nap_time > 0.0) sys_sleep(nap_time);
+        sys_semaphore_post(&audio_sem);
     }
     return NULL;
 }
 
 void audio_thread_init() {
     audio_thread_running = true;
-    sem_init(&audio_sem, 0, 1);
+    sys_semaphore_init(&audio_sem, 0, 1);
     pthread_create(&audio_thread_id, NULL, audio_thread, NULL);
 }   
 
 void audio_shutdown(void) {
     // Tell the audio thread to stop
-    pthread_mutex_lock(&audio_mutex);
+    sys_mutex_lock(&audio_mutex);
     audio_thread_running = false;
-    pthread_mutex_unlock(&audio_mutex);
-    sem_wait(&audio_sem);                   // Wait for the audio thread to finish rendering audio, then destroy it all
+    sys_mutex_unlock(&audio_mutex);
+    sys_semaphore_wait(&audio_sem);                   // Wait for the audio thread to finish rendering audio, then destroy it all
     pthread_join(audio_thread_id, NULL);
-    sem_destroy(&audio_sem);
+    sys_semaphore_destroy(&audio_sem);
 
     if (audio_api) {
         if (audio_api->shutdown) audio_api->shutdown();
@@ -201,7 +202,7 @@ void game_deinit(void) {
     controller_shutdown();
     audio_shutdown();
     gfx_shutdown();
-    sem_destroy(&game_sem);
+    sys_semaphore_destroy(&game_sem);
     inited = false;
 }
 
@@ -333,7 +334,7 @@ void main_func(void) {
     request_anim_frame(on_anim_frame);
 #else
     // initialize multithreading
-    sem_init(&game_sem, 0, 0);
+    sys_semaphore_init(&game_sem, 0, 0);
     audio_thread_init();
 
     while (true) {
