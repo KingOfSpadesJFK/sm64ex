@@ -61,12 +61,14 @@ static struct AudioAPI *audio_api;
 static struct GfxWindowManagerAPI *wm_api;
 static struct GfxRenderingAPI *rendering_api;
 
-#define AUDIO_SEMAPHORE_VALUE 0
 pthread_t audio_thread_id;
+pthread_mutex_t audio_mutex = PTHREAD_MUTEX_INITIALIZER;
 bool audio_thread_running = false;
 sem_t audio_sem;
 
-pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t game_mutex = PTHREAD_MUTEX_INITIALIZER;
+bool game_loop_iterating = false;
+sem_t game_sem;
 
 extern void gfx_run(Gfx *commands);
 extern void thread5_game_loop(void *arg);
@@ -97,31 +99,47 @@ void send_display_list(struct SPTask *spTask) {
 #define SAMPLES_LOW 528
 #endif
 
+void lock_game_loop(bool unlock) {
+    pthread_mutex_lock(&game_mutex);
+    game_loop_iterating = unlock;
+    pthread_mutex_unlock(&game_mutex);
+}
+
+bool game_loop_locked() {
+    pthread_mutex_lock(&game_mutex);
+    bool locked = game_loop_iterating;
+    pthread_mutex_unlock(&game_mutex);
+    return locked;
+}
+
 void produce_one_frame(void) {
     gfx_start_frame();
 
     sem_wait(&audio_sem);
     game_loop_one_iteration();
+    sem_post(&game_sem);
+    
     thread6_rumble_loop(NULL);
 
     gfx_end_frame();
 }
 
 // Seperate the audio thread from the main thread so that your ears won't bleed at a low framerate
-// FIXME: Low but comman chance of a segfault when teleporting to a new level
-//  After implementing mutexes and semaphores, idk how common it is now since it's hard to reproduce
+// BUG: Race condition when the game logic runs faster than its intended speed.
+//  This won't happen in normal gameplay at all unless you were to uncap the framerate, which you can only do by modifying the source code.
 void* audio_thread() {
     const double frametime_micro = 16666.666;   // 16.666666 ms = 60Hz; run this thread 60 times a second like the original game
     struct timespec start_time;
     struct timespec end_time;
+    sem_wait(&game_sem);
     while(1) {
         // Check if the audio thread should be stopped
-        pthread_mutex_lock(&mutex);
+        pthread_mutex_lock(&audio_mutex);
         if (!audio_thread_running) {
-            pthread_mutex_unlock(&mutex);
+            pthread_mutex_unlock(&audio_mutex);
             break;
         }
-        pthread_mutex_unlock(&mutex);
+        pthread_mutex_unlock(&audio_mutex);
 
         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &start_time);
         const f32 master_mod = (f32)configMasterVolume / 127.0f;
@@ -156,15 +174,15 @@ void* audio_thread() {
 
 void audio_thread_init() {
     audio_thread_running = true;
-    sem_init(&audio_sem, 0, AUDIO_SEMAPHORE_VALUE);
+    sem_init(&audio_sem, 0, 1);
     pthread_create(&audio_thread_id, NULL, audio_thread, NULL);
 }   
 
 void audio_shutdown(void) {
     // Tell the audio thread to stop
-    pthread_mutex_lock(&mutex);
+    pthread_mutex_lock(&audio_mutex);
     audio_thread_running = false;
-    pthread_mutex_unlock(&mutex);
+    pthread_mutex_unlock(&audio_mutex);
     sem_wait(&audio_sem);                   // Wait for the audio thread to finish rendering audio, then destroy it all
     pthread_join(audio_thread_id, NULL);
     sem_destroy(&audio_sem);
@@ -183,6 +201,7 @@ void game_deinit(void) {
     controller_shutdown();
     audio_shutdown();
     gfx_shutdown();
+    sem_destroy(&game_sem);
     inited = false;
 }
 
@@ -313,7 +332,10 @@ void main_func(void) {
     emscripten_set_main_loop(em_main_loop, 0, 0);
     request_anim_frame(on_anim_frame);
 #else
+    // initialize multithreading
+    sem_init(&game_sem, 0, 0);
     audio_thread_init();
+
     while (true) {
         wm_api->main_loop(produce_one_frame);
 #ifdef DISCORDRPC

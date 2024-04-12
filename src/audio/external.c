@@ -770,6 +770,12 @@ struct SPTask *create_next_audio_frame_task(void) {
 
 void create_next_audio_buffer(s16 *samples, u32 num_samples) {
     gAudioFrameCount++;
+    // From sm64 decomp since that also uses a separate thread for audio
+    if (gAudioLoadLock != AUDIO_LOCK_NOT_LOADING) {
+        printf("Audio Thread: Lost 1 Frame.\n");
+        return;
+    }
+
     if (sGameLoopTicked != 0) {
         update_game_sound();
         sGameLoopTicked = 0;

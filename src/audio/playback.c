@@ -970,7 +970,7 @@ void reclaim_notes(void) {
 
     for (i = 0; i < gMaxSimultaneousNotes; i++) {
         note = &gNotes[i];
-        if (note->parentLayer && note->parentLayer != NO_LAYER) {
+        if (note->parentLayer != NO_LAYER) {
             cond = FALSE;
             if (!note->parentLayer->enabled && note->priority >= NOTE_PRIORITY_MIN) {
                 cond = TRUE;
