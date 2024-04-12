@@ -96,9 +96,9 @@ void send_display_list(struct SPTask *spTask) {
 #endif
 
 void produce_one_frame(void) {
-    sem_wait(&audio_sem);
     gfx_start_frame();
 
+    sem_wait(&audio_sem);
     game_loop_one_iteration();
     thread6_rumble_loop(NULL);
 
