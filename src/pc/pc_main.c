@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <unistd.h>  //Header file for sleep(). man 3 sleep for details. 
 #include <pthread.h> 
+#include <semaphore.h> 
 #include <time.h>
 #include <errno.h>  
 
@@ -60,8 +61,10 @@ static struct AudioAPI *audio_api;
 static struct GfxWindowManagerAPI *wm_api;
 static struct GfxRenderingAPI *rendering_api;
 
+#define AUDIO_SEMAPHORE_VALUE 0
 pthread_t audio_thread_id;
 bool audio_thread_running = false;
+sem_t audio_sem;
 
 extern void gfx_run(Gfx *commands);
 extern void thread5_game_loop(void *arg);
@@ -93,6 +96,7 @@ void send_display_list(struct SPTask *spTask) {
 #endif
 
 void produce_one_frame(void) {
+    sem_wait(&audio_sem);
     gfx_start_frame();
 
     game_loop_one_iteration();
@@ -115,7 +119,7 @@ void* audio_thread() {
         set_sequence_player_volume(SEQ_PLAYER_SFX, (f32)configSfxVolume / 127.0f * master_mod);
         set_sequence_player_volume(SEQ_PLAYER_ENV, (f32)configEnvVolume / 127.0f * master_mod);
 
-        audio_game_loop_tick();
+        // audio_game_loop_tick();
 
         int samples_left = audio_api->buffered();
         u32 num_audio_samples = samples_left < audio_api->get_desired_buffered() ? SAMPLES_HIGH : SAMPLES_LOW;
@@ -140,9 +144,16 @@ void* audio_thread() {
         if (napResult == -1) {
             printf("interrupted by a signal handler\n"); 
         }
+        sem_post(&audio_sem);
     }
     return NULL;
 }
+
+void audio_thread_init() {
+    audio_thread_running = true;
+    sem_init(&audio_sem, 0, AUDIO_SEMAPHORE_VALUE);
+    pthread_create(&audio_thread_id, NULL, audio_thread, NULL);
+}   
 
 void audio_shutdown(void) {
     if (audio_api) {
@@ -151,6 +162,7 @@ void audio_shutdown(void) {
     }
     audio_thread_running = false;
     pthread_join(audio_thread_id, NULL);
+    sem_destroy(&audio_sem);
 }
 
 void game_deinit(void) {
@@ -291,8 +303,7 @@ void main_func(void) {
     emscripten_set_main_loop(em_main_loop, 0, 0);
     request_anim_frame(on_anim_frame);
 #else
-    audio_thread_running = true;
-    pthread_create(&audio_thread_id, NULL, audio_thread, NULL); 
+    audio_thread_init();
     while (true) {
         wm_api->main_loop(produce_one_frame);
 #ifdef DISCORDRPC
