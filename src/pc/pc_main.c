@@ -66,6 +66,8 @@ pthread_t audio_thread_id;
 bool audio_thread_running = false;
 sem_t audio_sem;
 
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+
 extern void gfx_run(Gfx *commands);
 extern void thread5_game_loop(void *arg);
 extern void audio_game_loop_tick(void);
@@ -107,43 +109,46 @@ void produce_one_frame(void) {
 
 // Seperate the audio thread from the main thread so that your ears won't bleed at a low framerate
 // FIXME: Low but comman chance of a segfault when teleporting to a new level
+//  After implementing mutexes and semaphores, idk how common it is now since it's hard to reproduce
 void* audio_thread() {
-    const long framerateNano = 33333333L;   // 33.333333 ms = 30 fps; run this thread 30 times a second like the original game
-    int napResult = 0;
+    const double frametime_micro = 16666.666;   // 16.666666 ms = 60Hz; run this thread 60 times a second like the original game
     struct timespec start_time;
     struct timespec end_time;
-    while(audio_thread_running) {
-        clock_gettime(CLOCK_MONOTONIC, &start_time);
+    while(1) {
+        // Check if the audio thread should be stopped
+        pthread_mutex_lock(&mutex);
+        if (!audio_thread_running) {
+            pthread_mutex_unlock(&mutex);
+            break;
+        }
+        pthread_mutex_unlock(&mutex);
+
+        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &start_time);
         const f32 master_mod = (f32)configMasterVolume / 127.0f;
         set_sequence_player_volume(SEQ_PLAYER_LEVEL, (f32)configMusicVolume / 127.0f * master_mod);
         set_sequence_player_volume(SEQ_PLAYER_SFX, (f32)configSfxVolume / 127.0f * master_mod);
         set_sequence_player_volume(SEQ_PLAYER_ENV, (f32)configEnvVolume / 127.0f * master_mod);
 
-        // audio_game_loop_tick();
-
         int samples_left = audio_api->buffered();
         u32 num_audio_samples = samples_left < audio_api->get_desired_buffered() ? SAMPLES_HIGH : SAMPLES_LOW;
         // printf("Audio samples: %d %u\n", samples_left, num_audio_samples);
-        s16 audio_buffer[SAMPLES_HIGH * 2 * 2];
-        for (int i = 0; i < 2; i++) {
-            /*if (audio_cnt-- == 0) {
-                audio_cnt = 2;
-            }
-            u32 num_audio_samples = audio_cnt < 2 ? 528 : 544;*/
-            if (!audio_thread_running) break;
-            create_next_audio_buffer(audio_buffer + i * (num_audio_samples * 2), num_audio_samples);
+        s16 audio_buffer[SAMPLES_HIGH * 2];
+        /*if (audio_cnt-- == 0) {
+            audio_cnt = 2;
         }
+        u32 num_audio_samples = audio_cnt < 2 ? 528 : 544;*/
+        create_next_audio_buffer(audio_buffer, num_audio_samples);
+
         // printf("Audio samples before submitting: %d\n", audio_api->buffered());
-        if (!audio_thread_running) break;
-        audio_api->play((u8 *)audio_buffer, 2 * num_audio_samples * 4);
+        audio_api->play((u8 *)audio_buffer, num_audio_samples * 4);
 
-        clock_gettime(CLOCK_MONOTONIC, &end_time);
+        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &end_time);
 
-        long napTime = framerateNano - (end_time.tv_nsec - start_time.tv_nsec);
-        napResult = nanosleep((const struct timespec[]){{0, napTime}}, NULL);
-        if (napResult == -1) {
-            printf("interrupted by a signal handler\n"); 
-        }
+        // Sleep for the remaining time
+        uint64_t second_passed = end_time.tv_nsec < start_time.tv_nsec ? 1000000000L : 0;       // Take account for if the end time is in the next second
+        double nap_time = frametime_micro - (double)(end_time.tv_nsec + second_passed - start_time.tv_nsec) / 1000.0;
+        // printf("Audio thread nap time: %f\n", nap_time);
+        sys_sleep(nap_time);
         sem_post(&audio_sem);
     }
     return NULL;
@@ -156,13 +161,18 @@ void audio_thread_init() {
 }   
 
 void audio_shutdown(void) {
+    // Tell the audio thread to stop
+    pthread_mutex_lock(&mutex);
+    audio_thread_running = false;
+    pthread_mutex_unlock(&mutex);
+    sem_wait(&audio_sem);                   // Wait for the audio thread to finish rendering audio, then destroy it all
+    pthread_join(audio_thread_id, NULL);
+    sem_destroy(&audio_sem);
+
     if (audio_api) {
         if (audio_api->shutdown) audio_api->shutdown();
         audio_api = NULL;
     }
-    audio_thread_running = false;
-    pthread_join(audio_thread_id, NULL);
-    sem_destroy(&audio_sem);
 }
 
 void game_deinit(void) {
