@@ -128,7 +128,7 @@ void produce_one_frame(void) {
 
     game_loop_one_iteration();
 
-    // Post the game thread semaphore if the game requested a sound reset
+    // Post the game thread semaphore if the game thread requested it
     pcthread_mutex_lock(&pcthread_game_mutex); 
     if (pcthread_wait_for_gameloop) {
         pcthread_semaphore_post(&pcthread_game_sema);
