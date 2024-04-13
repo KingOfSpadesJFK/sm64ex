@@ -22,12 +22,6 @@ char *sys_strlwr(char *src);
 int sys_strcasecmp(const char *s1, const char *s2);
 void sys_sleep(const uint64_t us);
 double sys_profile_time(void);
-void sys_mutex_lock(pthread_mutex_t *mutex);
-void sys_mutex_unlock(pthread_mutex_t *mutex);
-void sys_semaphore_init(sem_t *sem, int pshared, unsigned int value);
-void sys_semaphore_wait(sem_t *sem);
-void sys_semaphore_post(sem_t *sem);
-void sys_semaphore_destroy(sem_t *sem);
 
 // path stuff
 const char *sys_user_path(void);

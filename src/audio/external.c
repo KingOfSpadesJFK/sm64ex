@@ -13,6 +13,7 @@
 #include "seq_ids.h"
 #include "dialog_ids.h"
 #include "level_table.h"
+#include "pc/thread.h"
 
 #ifdef VERSION_EU
 #define EU_FLOAT(x) x ## f
@@ -770,16 +771,18 @@ struct SPTask *create_next_audio_frame_task(void) {
 
 void create_next_audio_buffer(s16 *samples, u32 num_samples) {
     gAudioFrameCount++;
-    // From sm64 decomp since that also uses a separate thread for audio
-    if (gAudioLoadLock != AUDIO_LOCK_NOT_LOADING) {
-        printf("Audio Thread: Lost 1 Frame.\n");
-        return;
-    }
-
     if (sGameLoopTicked != 0) {
         update_game_sound();
         sGameLoopTicked = 0;
     }
+
+    // If the game thread is resetting the sound, don't process any audio commands
+    pcthread_mutex_lock(&pcthread_game_mutex); bool reseting_sound = pcthread_game_reset_sound; pcthread_mutex_unlock(&pcthread_game_mutex);
+    if (reseting_sound) {
+        printf("Audio thread: Dropped 1 frame\n");
+        return;
+    }
+
     s32 writtenCmds;
     synthesis_execute(gAudioCmdBuffers[0], &writtenCmds, samples, num_samples);
     gAudioRandom = ((gAudioRandom + gAudioFrameCount) * gAudioFrameCount);
@@ -2354,6 +2357,11 @@ void sound_reset(u8 presetId) {
         sUnused8033323C = 0;
     }
 #endif
+    // Wait for audio thread to finish rendering
+    pcthread_mutex_lock(&pcthread_game_mutex); pcthread_game_reset_sound = true; pcthread_mutex_unlock(&pcthread_game_mutex);
+    pcthread_mutex_lock(&pcthread_audio_mutex); bool rendering = pcthread_audio_rendering;  pcthread_mutex_unlock(&pcthread_audio_mutex);
+    if (rendering) pcthread_semaphore_wait(&pcthread_audio_sema);
+
     sGameLoopTicked = 0;
     disable_all_sequence_players();
     sound_init();
