@@ -69,6 +69,7 @@ sem_t pcthread_audio_sema;
 pthread_mutex_t pcthread_game_mutex = PTHREAD_MUTEX_INITIALIZER;
 bool pcthread_game_loop_iterating = false;
 bool pcthread_game_reset_sound = false;
+bool pcthread_wait_for_gameloop = false;
 sem_t pcthread_game_sema;
 
 extern void gfx_run(Gfx *commands);
@@ -82,6 +83,28 @@ void dispatch_audio_sptask(struct SPTask *spTask) {
 }
 
 void set_vblank_handler(s32 index, struct VblankHandler *handler, OSMesgQueue *queue, OSMesg *msg) {
+}
+
+// Send a request for non-game threads to wait for the game thread to finish
+void pc_request_gameloop_wait(void) {
+    pcthread_mutex_lock(&pcthread_game_mutex); pcthread_wait_for_gameloop = true; pcthread_mutex_unlock(&pcthread_game_mutex);
+}
+
+// Wait for the audio thread to finish rendering audio
+void pc_wait_for_audio(void) {
+    pcthread_semaphore_wait(&pcthread_audio_sema);
+}
+
+// Check if the audio thread is currently rendering audio
+bool pc_check_audio_rendering(void) {
+    pcthread_mutex_lock(&pcthread_audio_mutex); bool rendering = pcthread_audio_rendering; pcthread_mutex_unlock(&pcthread_audio_mutex);
+    return rendering;
+}
+
+// Check if the game thread should finish before continuing
+bool pc_check_gameloop_wait(void) {
+    pcthread_mutex_lock(&pcthread_game_mutex); bool waiting = pcthread_wait_for_gameloop; pcthread_mutex_unlock(&pcthread_game_mutex);
+    return waiting;
 }
 
 static bool inited = false;
@@ -100,19 +123,6 @@ void send_display_list(struct SPTask *spTask) {
 #define SAMPLES_LOW 528
 #endif
 
-void lock_game_loop(bool unlock) {
-    pcthread_mutex_lock(&pcthread_game_mutex);
-    pcthread_game_loop_iterating = unlock;
-    pcthread_mutex_unlock(&pcthread_game_mutex);
-}
-
-bool game_loop_locked() {
-    pcthread_mutex_lock(&pcthread_game_mutex);
-    bool locked = pcthread_game_loop_iterating;
-    pcthread_mutex_unlock(&pcthread_game_mutex);
-    return locked;
-}
-
 void produce_one_frame(void) {
     gfx_start_frame();
 
@@ -120,9 +130,9 @@ void produce_one_frame(void) {
 
     // Post the game thread semaphore if the game requested a sound reset
     pcthread_mutex_lock(&pcthread_game_mutex); 
-    if (pcthread_game_reset_sound) {
+    if (pcthread_wait_for_gameloop) {
         pcthread_semaphore_post(&pcthread_game_sema);
-        pcthread_game_reset_sound = false; 
+        pcthread_wait_for_gameloop = false; 
     }
     pcthread_mutex_unlock(&pcthread_game_mutex);
 
@@ -156,10 +166,14 @@ void* audio_thread() {
         }
         u32 num_audio_samples = audio_cnt < 2 ? 528 : 544;*/
 
-        pcthread_mutex_lock(&pcthread_audio_mutex); pcthread_audio_rendering = true;  pcthread_mutex_unlock(&pcthread_audio_mutex);
-          create_next_audio_buffer(audio_buffer, num_audio_samples);
-          pcthread_semaphore_post(&pcthread_audio_sema);
-        pcthread_mutex_lock(&pcthread_audio_mutex); pcthread_audio_rendering = false; pcthread_mutex_unlock(&pcthread_audio_mutex);
+        if (!pc_check_gameloop_wait()) {
+            pcthread_mutex_lock(&pcthread_audio_mutex); pcthread_audio_rendering = true;  pcthread_mutex_unlock(&pcthread_audio_mutex);
+            create_next_audio_buffer(audio_buffer, num_audio_samples);
+            pcthread_semaphore_post(&pcthread_audio_sema);
+            pcthread_mutex_lock(&pcthread_audio_mutex); pcthread_audio_rendering = false; pcthread_mutex_unlock(&pcthread_audio_mutex);
+        } /* else {
+            printf("Audio thread: dropped frame\n");
+        } */
 
         // printf("Audio samples before submitting: %d\n", audio_api->buffered());
         audio_api->play((u8 *)audio_buffer, num_audio_samples * 4);

@@ -1,5 +1,7 @@
 #include "thread.h"
 
+// TODO: Cross-platform stuff
+
 void pcthread_mutex_lock(pthread_mutex_t *mutex) {
     pthread_mutex_lock(mutex);
 }

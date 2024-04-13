@@ -13,7 +13,7 @@
 #include "seq_ids.h"
 #include "dialog_ids.h"
 #include "level_table.h"
-#include "pc/thread.h"
+#include "pc/pc_main.h"
 
 #ifdef VERSION_EU
 #define EU_FLOAT(x) x ## f
@@ -774,13 +774,6 @@ void create_next_audio_buffer(s16 *samples, u32 num_samples) {
     if (sGameLoopTicked != 0) {
         update_game_sound();
         sGameLoopTicked = 0;
-    }
-
-    // If the game thread is resetting the sound, don't process any audio commands
-    pcthread_mutex_lock(&pcthread_game_mutex); bool reseting_sound = pcthread_game_reset_sound; pcthread_mutex_unlock(&pcthread_game_mutex);
-    if (reseting_sound) {
-        printf("Audio thread: Dropped 1 frame\n");
-        return;
     }
 
     s32 writtenCmds;
@@ -2358,9 +2351,8 @@ void sound_reset(u8 presetId) {
     }
 #endif
     // Wait for audio thread to finish rendering
-    pcthread_mutex_lock(&pcthread_game_mutex); pcthread_game_reset_sound = true; pcthread_mutex_unlock(&pcthread_game_mutex);
-    pcthread_mutex_lock(&pcthread_audio_mutex); bool rendering = pcthread_audio_rendering;  pcthread_mutex_unlock(&pcthread_audio_mutex);
-    if (rendering) pcthread_semaphore_wait(&pcthread_audio_sema);
+    pc_wait_for_audio();
+    pc_request_gameloop_wait();
 
     sGameLoopTicked = 0;
     disable_all_sequence_players();
